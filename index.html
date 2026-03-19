@@ -368,11 +368,25 @@
   }
   .countdown-label { font-size: var(--fs-xs); color: var(--text3); letter-spacing: 0.1em; text-transform: uppercase; }
 
-  /* ── Camera error ── */
-  .cam-error {
-    background: #FEF3C7; border: 1px solid #FDE68A; border-radius: var(--radius);
-    padding: clamp(10px, 2.5vw, 16px) clamp(12px, 3vw, 20px);
-    font-size: var(--fs-xs); color: #92400E; margin-bottom: var(--sp-md); display: none;
+  /* ── Loading Overlay ── */
+  .loader-overlay {
+    position: fixed; inset: 0; background: rgba(15,27,45,0.85);
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 9999; color: white; gap: 20px;
+  }
+  .spinner {
+    width: 40px; height: 40px; border: 3px solid rgba(184,150,90,0.3);
+    border-radius: 50%; border-top-color: var(--gold);
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loader-text { font-family: 'Cormorant Garamond', serif; font-size: 20px; letter-spacing: 0.05em; }
+
+  /* ── Error Toast ── */
+  .error-toast {
+    position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+    background: #FF4D4D; color: white; padding: 12px 24px;
+    border-radius: 8px; font-size: 14px; display: none; z-index: 10000;
   }
 
   /* ── Scrollbar ── */
@@ -675,6 +689,12 @@
             <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg></div>
             <div class="summary-label">Signature obtained</div>
           </div>
+          <div class="summary-row" style="border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 12px;">
+            <div class="summary-label" style="color: var(--text3); font-size: 12px;">
+              Hotel: <span id="display-hotel" style="color: var(--text); font-weight: 500;">-</span><br>
+              Booking ID: <span id="display-res-id" style="color: var(--text); font-weight: 500;">-</span>
+            </div>
+          </div>
         </div>
         <button class="btn-new" onclick="resetApp()">Next Guest</button>
         <div class="countdown-wrap">
@@ -711,6 +731,13 @@ let selfieCaptured = false;
 let idCaptured = false;
 let sigDrawn = false;
 let selfieStream = null, idStream = null;
+
+// Cloudbeds Data
+const API_BASE = "http://localhost:5000/api";
+let reservationID = null;
+let guestID = null;
+let hotelName = null;
+let propertyID = null;
 
 // Step labels
 const labels = ['', 'Your Details', 'Terms & Conditions', 'Guest Photo', 'ID / Passport', 'Signature', ''];
@@ -771,9 +798,84 @@ function goTo(n) {
   window.scrollTo(0, 0);
 }
 
-function goNext() {
+async function goNext() {
   if (!isStepValid()) return;
+  
+  // Custom logic for Step 1 (Verification)
+  if (current === 1) {
+    const firstName = document.getElementById('first-name').value;
+    const lastName = document.getElementById('last-name').value;
+    const startDate = document.getElementById('checkin-date').value;
+    const endDate = document.getElementById('checkout-date').value;
+
+    showLoader("Searching for your booking...");
+    try {
+      const res = await fetch(`${API_BASE}/verify-booking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName, lastName, startDate, endDate })
+      });
+      const data = await res.json();
+      hideLoader();
+
+      if (data.success) {
+        reservationID = data.reservationID;
+        guestID = data.guestID;
+        hotelName = data.hotel;
+        propertyID = data.propertyID;
+        document.getElementById('display-hotel').textContent = hotelName;
+        document.getElementById('display-res-id').textContent = reservationID;
+        console.log("Booking found:", data);
+        goTo(current + 1);
+      } else {
+        showError(data.message || "No booking found. Please check your details.");
+      }
+    } catch (e) {
+      hideLoader();
+      showError("Connection error. Is the server running?");
+    }
+    return;
+  }
+
+  // Custom logic for Step 5 (Completion)
+  if (current === 5) {
+    showLoader("Finalizing your check-in...");
+    try {
+      const res = await fetch(`${API_BASE}/complete-checkin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reservationID, hotelName, propertyID })
+      });
+      const data = await res.json();
+      hideLoader();
+      if (data.success) {
+        goTo(current + 1);
+      } else {
+        showError(data.message || "Check-in failed. Please contact the front desk.");
+        goTo(current + 1); 
+      }
+    } catch (e) {
+      hideLoader();
+      goTo(current + 1);
+    }
+    return;
+  }
+
   if (current < TOTAL) goTo(current + 1);
+}
+
+function showLoader(msg) {
+  document.getElementById('loader-msg').textContent = msg;
+  document.getElementById('loader').style.display = 'flex';
+}
+function hideLoader() {
+  document.getElementById('loader').style.display = 'none';
+}
+function showError(msg) {
+  const toast = document.getElementById('error-toast');
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  setTimeout(() => toast.style.display = 'none', 3500);
 }
 function goBack() {
   if (current > 1) goTo(current - 1);
@@ -841,6 +943,37 @@ function capturePhoto(type) {
   if (type === 'selfie') selfieCaptured = true;
   else idCaptured = true;
   updateBottom();
+
+  // Upload to Cloudbeds
+  uploadToCloudbeds(type);
+}
+
+async function uploadToCloudbeds(type) {
+  const canvas = document.getElementById(type + '-canvas');
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
+  const formData = new FormData();
+  formData.append('guestID', guestID);
+  formData.append('hotelName', hotelName);
+  formData.append('image', blob, `${type}.jpg`);
+
+  const endpoint = type === 'selfie' ? 'upload-photo' : 'upload-document';
+  
+  showLoader(`Uploading ${type}...`);
+  try {
+    const res = await fetch(`${API_BASE}/${endpoint}`, {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    hideLoader();
+    if (!data.success) {
+      console.error("Cloudbeds error:", data);
+      showError(data.message || "An unknown error occurred during upload.");
+    }
+  } catch (e) {
+    hideLoader();
+    console.error("Upload error:", e);
+  }
 }
 
 function retakePhoto(type) {
@@ -885,6 +1018,8 @@ function uploadPhoto(input, type) {
       if (type === 'selfie') selfieCaptured = true;
       else idCaptured = true;
       updateBottom();
+      // Upload the manually selected file to Cloudbeds
+      uploadToCloudbeds(type);
     };
     img.src = e.target.result;
   };
@@ -999,5 +1134,14 @@ function stopCountdown() {
   if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
 }
 </script>
+<!-- Loading Overlay -->
+<div class="loader-overlay" id="loader">
+  <div class="spinner"></div>
+  <div class="loader-text" id="loader-msg">Verifying Booking...</div>
+</div>
+
+<!-- Error Toast -->
+<div class="error-toast" id="error-toast"></div>
+
 </body>
 </html>
