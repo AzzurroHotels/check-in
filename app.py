@@ -31,63 +31,67 @@ def ping():
     return jsonify({"status": "online", "hotels": [h['name'] for h in HOTELS]})
 
 def _check_hotel_for_booking(hotel, conf_number):
-    """Helper function to check a single hotel for a booking (used for parallel execution)."""
-    if not hotel['api_key']:
+    """Helper function to check a single hotel using multiple parallel strategies."""
+    if not hotel['api_key']: return None
+    
+    headers = {"x-api-key": hotel['api_key']}
+    
+    # Define search tasks
+    def search_by_id(param_name):
+        try:
+            params = {param_name: conf_number}
+            resp = requests.get(f"{CLOUDBEDS_API_URL}/getReservationsWithRateDetails", 
+                                headers=headers, params=params, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('success') and data.get('data'):
+                    res = data['data'][0]
+                    if res.get('status') == 'confirmed':
+                        return _format_res(res, hotel['name'])
+        except: pass
         return None
 
-    past = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
-    future = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime('%Y-%m-%d')
-    
-    try:
-        headers = {"x-api-key": hotel['api_key']}
-        
-        # 1. Direct search
-        params_direct = {"reservationID": conf_number}
-        resp_direct = requests.get(f"{CLOUDBEDS_API_URL}/getReservationsWithRateDetails", headers=headers, params=params_direct, timeout=10)
-        
-        if resp_direct.status_code == 200:
-            data_direct = resp_direct.json()
-            if data_direct.get('success') and data_direct.get('data'):
-                res = data_direct['data'][0]
-                if res.get('status') == 'confirmed':
-                    return {
-                        "success": True,
-                        "hotel": hotel['name'],
-                        "propertyID": res.get('propertyID'),
-                        "reservationID": res.get('reservationID'),
-                        "guestID": res.get('guestID'),
-                        "guestName": res.get('guestName'),
-                        "checkIn": res.get('reservationCheckIn'),
-                        "checkOut": res.get('reservationCheckOut'),
-                        "status": res.get('status')
-                    }
+    def search_broad():
+        try:
+            # Narrower window: -7 to +60 days for better performance
+            past = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
+            future = (datetime.datetime.now() + datetime.timedelta(days=60)).strftime('%Y-%m-%d')
+            params = {"status": "confirmed", "checkInFrom": past, "checkInTo": future}
+            resp = requests.get(f"{CLOUDBEDS_API_URL}/getReservationsWithRateDetails", 
+                                headers=headers, params=params, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get('success'):
+                    for res in data.get('data', []):
+                        if conf_number in [str(res.get('reservationID', '')), str(res.get('sourceReservationID', ''))]:
+                            return _format_res(res, hotel['name'])
+        except: pass
+        return None
 
-        # 2. Broad search
-        params_list = {"status": "confirmed", "checkInFrom": past, "checkInTo": future}
-        resp_list = requests.get(f"{CLOUDBEDS_API_URL}/getReservationsWithRateDetails", headers=headers, params=params_list, timeout=10)
-        
-        if resp_list.status_code == 200:
-            data_list = resp_list.json()
-            if data_list.get('success'):
-                for res in data_list.get('data', []):
-                    if conf_number in [str(res.get('reservationID', '')), str(res.get('sourceReservationID', ''))]:
-                        return {
-                            "success": True,
-                            "hotel": hotel['name'],
-                            "propertyID": res.get('propertyID'),
-                            "reservationID": res.get('reservationID'),
-                            "guestID": res.get('guestID'),
-                            "guestName": res.get('guestName'),
-                            "checkIn": res.get('reservationCheckIn'),
-                            "checkOut": res.get('reservationCheckOut'),
-                            "status": res.get('status')
-                        }
-    except requests.exceptions.Timeout:
-        print(f"--- TIMEOUT: {hotel['name']} (skipped) ---")
-    except Exception as e:
-        print(f"--- ERROR: {hotel['name']} -> {str(e)} ---")
-    
+    # Run sub-tasks in parallel for THIS hotel
+    with ThreadPoolExecutor(max_workers=3) as sub_executor:
+        futures = [
+            sub_executor.submit(search_by_id, "reservationID"),
+            sub_executor.submit(search_by_id, "sourceReservationID"),
+            sub_executor.submit(search_broad)
+        ]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: return res
     return None
+
+def _format_res(res, hotel_name):
+    return {
+        "success": True,
+        "hotel": hotel_name,
+        "propertyID": res.get('propertyID'),
+        "reservationID": res.get('reservationID'),
+        "guestID": res.get('guestID'),
+        "guestName": res.get('guestName'),
+        "checkIn": res.get('reservationCheckIn'),
+        "checkOut": res.get('reservationCheckOut'),
+        "status": res.get('status')
+    }
 
 @app.route('/api/verify-booking', methods=['POST'])
 def verify_booking():
