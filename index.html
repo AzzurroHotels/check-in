@@ -382,12 +382,16 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .loader-text { font-family: 'Cormorant Garamond', serif; font-size: 20px; letter-spacing: 0.05em; }
 
-  /* ── Error Toast ── */
-  .error-toast {
-    position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
-    background: #FF4D4D; color: white; padding: 12px 24px;
-    border-radius: 8px; font-size: 14px; display: none; z-index: 10000;
+  /* ── Toasts ── */
+  .toast {
+    position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%) translateY(100px);
+    color: white; padding: 12px 24px; border-radius: var(--radius-lg);
+    font-size: var(--fs-sm); transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28), opacity 0.3s; 
+    z-index: 10000; box-shadow: 0 4px 20px rgba(0,0,0,0.2); opacity: 0; pointer-events: none;
   }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
+  .toast.error { background: #FF4D4D; }
+  .toast.success { background: var(--success); }
 
   /* ── Scrollbar ── */
   .tc-box::-webkit-scrollbar { width: 4px; }
@@ -397,6 +401,8 @@
 </head>
 <body>
 <div class="app">
+  <div id="error-toast" class="toast error"></div>
+  <div id="success-toast" class="toast success"></div>
 
   <!-- Header -->
   <header class="header">
@@ -423,27 +429,11 @@
 
     <!-- Screen 1: Guest Details -->
     <div class="screen" id="screen-1">
-      <div class="screen-title">Your Details</div>
-      <div class="screen-subtitle">Please enter your name as it appears on your ID.</div>
-      <div class="name-row">
-        <div class="field-wrap">
-          <label class="field-label">First Name</label>
-          <input class="field-input" type="text" id="first-name" placeholder="e.g. James" oninput="checkDetails()">
-        </div>
-        <div class="field-wrap">
-          <label class="field-label">Last Name</label>
-          <input class="field-input" type="text" id="last-name" placeholder="e.g. Cooper" oninput="checkDetails()">
-        </div>
-      </div>
-      <div class="name-row">
-        <div class="field-wrap">
-          <label class="field-label">Check-In Date</label>
-          <input class="field-input" type="date" id="checkin-date" oninput="checkDetails()">
-        </div>
-        <div class="field-wrap">
-          <label class="field-label">Check-Out Date</label>
-          <input class="field-input" type="date" id="checkout-date" oninput="checkDetails()">
-        </div>
+      <div class="screen-title">Find Your Booking</div>
+      <div class="screen-subtitle">Please enter your reservation confirmation number (e.g. from your booking email).</div>
+      <div class="field-wrap" style="margin-top: 20px;">
+        <label class="field-label">Confirmation Number</label>
+        <input class="field-input" type="text" id="confirmation-number" placeholder="Enter ID (e.g. 2154697355388)" oninput="checkDetails()">
       </div>
     </div>
 
@@ -452,12 +442,16 @@
       <div class="screen-title">Terms & Conditions</div>
       <div class="screen-subtitle">Please read and agree to the following before proceeding.</div>
       <div class="tc-box" id="tc-box" onscroll="checkScroll()">
-        <p style="margin-bottom:16px;">Dear Guest,<br>Thank you for choosing Azzurro Hotels as your accommodation. We hope that you have a pleasant stay. These terms and conditions are valid during their stay with Azzurro Hotels.</p>
+        <div id="tc-content">
+          <p style="margin-bottom:16px;">Dear Guest,<br>Thank you for choosing Azzurro Hotels as your accommodation. We hope that you have a pleasant stay. These terms and conditions are valid during their stay with Azzurro Hotels.</p>
 
-        <h3>Term of the Stay</h3>
-        <p>The agreement begins at 3:00 p.m. on the Check-in Date and ends at 10:00 a.m. on the Checkout Date.</p>
+          <h3>Property Address</h3>
+          <p><strong>[HOTEL_ADDRESS]</strong></p>
 
-        <h3>Deposit</h3>
+          <h3>Term of the Stay</h3>
+          <p>The agreement begins at 3:00 p.m. on <strong>[CHECK_IN_DATE]</strong> and ends at 10:00 a.m. on <strong>[CHECK_OUT_DATE]</strong>.</p>
+
+          <h3>Deposit</h3>
         <p>Credit card authorization is in place for any damages. Your card will not be charged unless there is damage to the room. Fines will include cases of a false fire alarm caused by smoking or vaping etc.</p>
 
         <h3>Method of Payment</h3>
@@ -583,7 +577,8 @@
           Guests hereby agree to follow the above policies during their stay with Azzurro Hotels and understand that any violation of the policy will lead to termination of the agreement, and an immediate cancellation of your stay with no refund, forfeiting your deposit and may charge fines accordingly to the violation made.
         </div>
       </div>
-      <div class="tc-scroll-hint" id="scroll-hint">↓ Scroll to read all terms before agreeing</div>
+    </div>
+    <div class="tc-scroll-hint" id="scroll-hint">↓ Scroll to read all terms before agreeing</div>
       <div class="agree-row" id="agree-row" onclick="toggleAgree()">
         <div class="checkbox-box" id="agree-checkbox">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
@@ -691,6 +686,7 @@
           </div>
           <div class="summary-row" style="border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 12px;">
             <div class="summary-label" style="color: var(--text3); font-size: 12px;">
+              Guest: <span id="display-guest-name" style="color: var(--text); font-weight: 500;">-</span><br>
               Hotel: <span id="display-hotel" style="color: var(--text); font-weight: 500;">-</span><br>
               Booking ID: <span id="display-res-id" style="color: var(--text); font-weight: 500;">-</span>
             </div>
@@ -733,11 +729,20 @@ let sigDrawn = false;
 let selfieStream = null, idStream = null;
 
 // Cloudbeds Data
-const API_BASE = "http://localhost:5000/api";
+const API_BASE = "http://127.0.0.1:5005/api";
 let reservationID = null;
-let guestID = null;
-let hotelName = null;
-let propertyID = null;
+let guestName = '';
+let guestID = '';
+let hotelName = '';
+let propertyID = '';
+let checkIn = '';
+let checkOut = '';
+let hotelAddress = '';
+
+window.onerror = function(msg, url, line) {
+  alert("JS Error: " + msg + "\nAt: " + url + ":" + line);
+  return false;
+};
 
 // Step labels
 const labels = ['', 'Your Details', 'Terms & Conditions', 'Guest Photo', 'ID / Passport', 'Signature', ''];
@@ -768,8 +773,7 @@ function updateBottom() {
 
 function isStepValid() {
   if (current === 1) {
-    return document.getElementById('first-name').value.trim() &&
-           document.getElementById('last-name').value.trim();
+    return document.getElementById('confirmation-number').value.trim().length >= 4;
   }
   if (current === 2) return agreed;
   if (current === 3) return selfieCaptured;
@@ -790,9 +794,7 @@ function goTo(n) {
   if (current === 4) startCamera('id');
   if (current === 5) initSig();
   if (current === 6) {
-    const first = document.getElementById('first-name').value;
-    const last = document.getElementById('last-name').value;
-    document.getElementById('guest-name-display').textContent = first + ' ' + last;
+    document.getElementById('guest-name-display').textContent = guestName;
     startCountdown();
   }
   window.scrollTo(0, 0);
@@ -803,37 +805,44 @@ async function goNext() {
   
   // Custom logic for Step 1 (Verification)
   if (current === 1) {
-    const firstName = document.getElementById('first-name').value;
-    const lastName = document.getElementById('last-name').value;
-    const startDate = document.getElementById('checkin-date').value;
-    const endDate = document.getElementById('checkout-date').value;
+    const confirmationNumber = document.getElementById('confirmation-number').value.trim();
+    if (!confirmationNumber) return; // Should be caught by isStepValid, but good for redundancy
 
     showLoader("Searching for your booking...");
     try {
       const res = await fetch(`${API_BASE}/verify-booking`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ firstName, lastName, startDate, endDate })
+        body: JSON.stringify({ confirmationNumber })
       });
       const data = await res.json();
       hideLoader();
 
-      if (data.success) {
-        reservationID = data.reservationID;
-        guestID = data.guestID;
-        hotelName = data.hotel;
-        propertyID = data.propertyID;
-        document.getElementById('display-hotel').textContent = hotelName;
-        document.getElementById('display-res-id').textContent = reservationID;
-        console.log("Booking found:", data);
-        goTo(current + 1);
-      } else {
+        if (data.success) {
+          reservationID = data.reservationID;
+          guestName = data.guestName;
+          guestID = data.guestID;
+          hotelName = data.hotel;
+          propertyID = data.propertyID;
+          checkIn = data.checkIn;
+          checkOut = data.checkOut;
+          
+          document.getElementById('display-hotel').textContent = hotelName;
+          document.getElementById('display-res-id').textContent = reservationID;
+          document.getElementById('display-guest-name').textContent = guestName;
+          
+          await fetchHotelDetails();
+          updateTC();
+          
+          goTo(2);
+        } else {
         showError(data.message || "No booking found. Please check your details.");
       }
     } catch (e) {
-      hideLoader();
-      showError("Connection error. Is the server running?");
-    }
+    hideLoader();
+    console.error("JS Catch Error:", e);
+    showError("An unexpected error occurred during upload: " + e.message);
+  }
     return;
   }
 
@@ -872,11 +881,49 @@ function hideLoader() {
   document.getElementById('loader').style.display = 'none';
 }
 function showError(msg) {
-  const toast = document.getElementById('error-toast');
-  toast.textContent = msg;
-  toast.style.display = 'block';
-  setTimeout(() => toast.style.display = 'none', 3500);
+  const err = document.getElementById('error-toast');
+  err.textContent = msg;
+  err.classList.add('show');
+  setTimeout(() => err.classList.remove('show'), 4000);
 }
+
+function showSuccess(msg) {
+  let toast = document.getElementById('success-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'success-toast';
+    toast.className = 'toast success';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 4000);
+}
+
+async function fetchHotelDetails() {
+  try {
+    const res = await fetch(`${API_BASE}/hotel-details?propertyID=${propertyID}&hotelName=${hotelName}`);
+    const data = await res.json();
+    if (data.success && data.data) {
+      const addr = data.data.propertyAddress;
+      hotelAddress = `${addr.propertyAddress1}, ${addr.propertyCity}, ${addr.propertyState} ${addr.propertyZip}`;
+    }
+  } catch (e) {
+    console.error("Error fetching hotel details:", e);
+  }
+}
+
+function updateTC() {
+  const box = document.getElementById('tc-content');
+  if (!box) return;
+  // Replace placeholders in the box content
+  let html = box.innerHTML;
+  html = html.replace(/\[CHECK_IN_DATE\]/g, checkIn || 'the check-in date');
+  html = html.replace(/\[CHECK_OUT_DATE\]/g, checkOut || 'the checkout date');
+  html = html.replace(/\[HOTEL_ADDRESS\]/g, hotelAddress || 'the hotel premises');
+  box.innerHTML = html;
+}
+
 function goBack() {
   if (current > 1) goTo(current - 1);
 }
@@ -924,6 +971,7 @@ function stopCamera() {
 }
 
 function capturePhoto(type) {
+  console.log("capturePhoto called for:", type);
   const video = document.getElementById(type + '-video');
   const canvas = document.getElementById(type + '-canvas');
   const overlay = document.getElementById(type + '-overlay');
@@ -957,22 +1005,28 @@ async function uploadToCloudbeds(type) {
   formData.append('image', blob, `${type}.jpg`);
 
   const endpoint = type === 'selfie' ? 'upload-photo' : 'upload-document';
-  
+  console.log(`Uploading ${type} for hotel ${hotelName} (Guest: ${guestID})...`);
   showLoader(`Uploading ${type}...`);
+  
   try {
     const res = await fetch(`${API_BASE}/${endpoint}`, {
       method: 'POST',
       body: formData
     });
-    const data = await res.json();
+    const text = await res.text();
+    console.log("Raw server response:", text);
+    const data = JSON.parse(text);
     hideLoader();
     if (!data.success) {
-      console.error("Cloudbeds error:", data);
-      showError(data.message || "An unknown error occurred during upload.");
+      showError(data.message || "Upload failed");
+    } else {
+      showSuccess(`${type === 'selfie' ? 'Photo' : 'Document'} uploaded successfully!`);
+      console.log("Upload success:", data);
     }
   } catch (e) {
     hideLoader();
     console.error("Upload error:", e);
+    showError("An unexpected error occurred during upload: " + e.message);
   }
 }
 
@@ -1070,7 +1124,7 @@ function clearSig() {
 function resetApp() {
   stopCountdown();
   agreed = false; selfieCaptured = false; idCaptured = false; sigDrawn = false;
-  ['first-name','last-name','checkin-date','checkout-date','room-num'].forEach(id => {
+  ['confirmation-number', 'room-num'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   document.getElementById('agree-checkbox').classList.remove('checked');
