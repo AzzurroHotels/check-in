@@ -39,10 +39,6 @@ def _check_hotel_for_booking(hotel, conf_number):
     future = (datetime.datetime.now() + datetime.timedelta(days=365)).strftime('%Y-%m-%d')
     
     try:
-        print(f"--- DEBUG: VERIFY BOOKING ---")
-        print(f"Hotel: {hotel['name']}")
-        print(f"Key (masked): {hotel['api_key'][:10]}...{hotel['api_key'][-4:]}")
-        
         headers = {"x-api-key": hotel['api_key']}
         
         # 1. Direct search

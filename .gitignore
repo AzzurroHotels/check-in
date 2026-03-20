@@ -4,3 +4,4 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+deployment_guide.md
