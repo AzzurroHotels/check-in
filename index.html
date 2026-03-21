@@ -13,6 +13,7 @@
 <link rel="icon" type="image/png" href="https://irp.cdn-website.com/f3acc0ee/dms3rep/multi/logo+azzurro-3.png">
 <link rel="apple-touch-icon" href="https://irp.cdn-website.com/f3acc0ee/dms3rep/multi/logo+azzurro-3.png">
 <link rel="manifest" href="manifest.json">
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <title>Azzurro Hotels — Guest Check-In</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -687,6 +688,10 @@
             <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg></div>
             <div class="summary-label">Signature obtained</div>
           </div>
+          <div class="summary-row">
+            <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg></div>
+            <div class="summary-label">Signed T&C uploaded</div>
+          </div>
           <div class="summary-row" style="border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 12px;">
             <div class="summary-label" style="color: var(--text3); font-size: 12px;">
               Guest: <span id="display-guest-name" style="color: var(--text); font-weight: 500;">-</span><br>
@@ -855,18 +860,22 @@ async function goNext() {
   if (current === 5) {
     showLoader("Finalizing your check-in...");
     try {
-      const res = await fetch(`${API_BASE}/complete-checkin`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reservationID, hotelName, propertyID })
-      });
-      const data = await res.json();
+      // Upload signed T&C PDF and complete check-in in parallel
+      const [tcResult, checkinRes] = await Promise.all([
+        uploadSignedTC(),
+        fetch(`${API_BASE}/complete-checkin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reservationID, hotelName, propertyID })
+        })
+      ]);
+      const data = await checkinRes.json();
       hideLoader();
       if (data.success) {
         goTo(current + 1);
       } else {
         showError(data.message || "Check-in failed. Please contact the front desk.");
-        goTo(current + 1); 
+        goTo(current + 1);
       }
     } catch (e) {
       hideLoader();
@@ -1144,6 +1153,164 @@ function clearSig() {
   const canvas = document.getElementById('sigPad');
   canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
   sigDrawn = false; updateBottom();
+}
+
+// ── Signed T&C PDF Generation ─────────────────────────────────────
+const TC_SECTIONS = [
+  { heading: null, body: "Dear Guest,\nThank you for choosing Azzurro Hotels as your accommodation. We hope that you have a pleasant stay. These terms and conditions are valid during their stay with Azzurro Hotels." },
+  { heading: "Property Address", body: "[HOTEL_ADDRESS]" },
+  { heading: "Term of the Stay", body: "The agreement begins at 3:00 p.m. on [CHECK_IN_DATE] and ends at 10:00 a.m. on [CHECK_OUT_DATE]." },
+  { heading: "Deposit", body: "Credit card authorization is in place for any damages. Your card will not be charged unless there is damage to the room. Fines will include cases of a false fire alarm caused by smoking or vaping etc." },
+  { heading: "Method of Payment", body: "Guests will pay their full stay through their booking site accordingly." },
+  { heading: "Requirement", body: "All Guests must be 18 or above and have a valid Passport ID presentable at check in. A valid credit card is also required to be registered in order to check in." },
+  { heading: "Cancellation policy", body: "Cancellation policy will be referred to the Booking site." },
+  { heading: "HOTEL POLICY", body: null },
+  { heading: "1. Bunk Bed Safety", body: "Azzurro Hotels offers bunk bed style accommodation. Guests are fully responsible for their own safety while using bunk-style accommodation, which carries higher risks compared to accommodation located closer to the ground. These risks may include slipping, falls, or injury due to the elevated nature of the beds. By staying with us, guests acknowledge and accept these risks, and Azzurro Hotels will not be held liable for any injuries resulting from the use of this type of accommodation.\n\nFor your safety, bunk beds are designed with specific weight limits:\nTop bunk: Maximum weight capacity of 90 kg\nBottom bunk: Maximum weight capacity of 110 kg\nIf these conditions are not suitable, please make alternative accommodation arrangements.\n\nGuests agree that Azzurro Hotels will not be liable for injuries sustained as a result of using the bunk bed style accommodation provided." },
+  { heading: "2. No Talking Inside the Rooms", body: "No talking inside the rooms. Please be mindful of different sleeping schedules of other Guests inside your room. To take phone calls or to socialize, please use the common area." },
+  { heading: "3. No Illegal Activity", body: "No illegal activity will be tolerated. This includes but is not limited to engaging in drug-related activity, aggressive behavior towards other Guests or staff, or theft of any kind, including food or personal belongings. When deemed necessary, such behavior and activity will be referred to the police with an eviction, and no refund will be given." },
+  { heading: "4. No Alcohol", body: "Guests are not allowed to bring alcohol onto the premises or consume inside the premises. If Guests are found drinking inside the property, Guests will be removed from the property with no refund." },
+  { heading: "5. No Smoking", body: "Smoking is not permitted on the premises or within 10 meters from the premises. This is for the health and safety of all Guests involved, and especially for those who may have underlying health conditions (e.g asthma) that can be easily triggered by smoking cigarettes, as well as vapes, vaporizers, vape pens, hookah pens, and electronic cigarettes. If Guests are found smoking inside the property, Guests will be removed from the property with no refund." },
+  { heading: "6. No Burning of Candles & Incense", body: "Burning candles nor incense in or around the property is not permitted. Any property damage caused by the Guest's failure to comply, including discoloration of ceiling and/or walls, fire, other Guests' health complaints such as nausea and headaches will be the responsibility of the Guest." },
+  { heading: "7. Fire Alarm Fines", body: "The premises are linked to the fire department, and false alarms due to personal activity or negligence such as unattended cooking, smoking or vaping, or excessive use of deodorant will have the corresponding invoice charged to the Guest." },
+  { heading: "8. Room & Bed Policy", body: "a. Assigned Rooms / Beds\nGuests must stay in the agreed Room & Bed during their stay. Exchanging and transferring of rooms and/or beds are not permitted without informing Azzurro Hotels as significant amount confusion and inconvenience is caused for the other Guests and administration.\n\nb. Scheduled cleaning\nNew sheets and duvet/pillow cover can be requested once in 2 weeks. If it is not requested, Azzurro Hotels will organize to change your bedsheets every 2 weeks. En-suite bathrooms will be cleaned daily. Any belongings that are kept inside the bathroom will be removed before cleaning the bathroom.\n\nc. Hygienic Room / Bed\nGuests are required to maintain a hygienic environment during their stay.\n\nHygienic Standard:\ni. Beddings should not have any stains or dirt. If the beddings are dirty, Guests will be responsible in cleaning them or alerting Azzurro Hotels to organize adequate cleaning. When strong stains and smell persists due to body fluids such as vomiting and urine on their bed, cleaning fees will be charged to the Guest for heavy cleaning.\n\nii. No food inside the room. Guests are not allowed to keep their foods inside the room as it can bring cockroaches and cause odor. When they are found inside the room, they will be confiscated by the staff.\n\niii. An adequate space for your roommate / roommates belongings. Personal belongings such as clothing, shoes, and others should be kept inside the drawer, or their locker, and keep minimal disturbance to the other roommates inside the room. If there is no space for the other Guests to use the room, Azzurro Hotels will request the Guests to put their unused belongings in a luggage or keep them in external storage.\n\nIf the above three Hygienic Standards are not followed by the Guest, on the 3rd warning, Azzurro Hotels will clean their belongings without Guest permission. If the room status does not improve afterwards, this will lead to immediate eviction with no refund." },
+  { heading: "9. No Noise Disturbance", body: "Azzurro Hotels respects various working hours and sleeping schedules. Guests are not allowed to play loud music, or have loud conversations that may disturb other guests.\n\nQuiet hours - Quiet hours are from 10pm to 8am. During this time, Guests are required to keep noise to a minimum.\n\nIf we receive multiple noise complaints from other Guests we may be forced to terminate your agreement and may result in forfeiting any pre-payments and/or deposits.\n\nComplaints from Neighbors: If a Guest receives a complaint from a neighbor for being noisy and disruptive, Guests will be fined $200 and have a final warning before termination of contract.\n\nNo party: Large gatherings or parties are not permitted inside the property. When they are found organizing a party, they will be given a final warning before they are evicted with no refund." },
+  { heading: "10. No Overnight Guests", body: "External visitors or Guests are not permitted on the premises under any circumstances." },
+  { heading: "11. Personal Belongings", body: "Azzurro Hotels shall not be held liable for any loss, theft, or damage to personal property belonging to Guests, regardless of the circumstances surrounding such incidents. Guests are responsible for safeguarding their personal belongings, including valuables, electronic devices, and cash, during their stay at Azzurro Hotels. Azzurro Hotels will aim to provide secure premises at all times with digital locks and CCTV, which is restricted to authorized representatives only.\n\nAzzurro Hotels urge all Guests to ensure that their personal and valuable belongings are locked away securely and take any appropriate travel insurance to cover the loss of personal belongings." },
+  { heading: "12. Trouble with Other Guests", body: "Guests agree that the Azzurro Hotels will not cover for any damages or injuries caused by other Guests. Please ensure that you alert us to any concerns or call the police (Dial 000) if you feel that you are being threatened at any time." },
+  { heading: "13. Accident and Injury Disclaimer", body: "Guest acknowledges that Azzurro Hotels is not liable for any injuries or accidents that may occur on its premises during their stay. Guests will assume all risks associated with their stay and agree to release the Azzurro Hotels from any claims or damages arising from accidents or injuries." },
+  { heading: "14. Privacy Policy", body: "For the Guest's privacy and safety, Azzurro Hotels will not disclose the identity, room number, or presence of a Guest to anyone unless it is requested by appropriate law enforcement." },
+  { heading: "15. Access to the Property", body: "The Guest shall allow Azzurro Hotels to access the property for purposes of repair and inspection. Azzurro Hotels shall exercise this right of access in a reasonable manner." },
+  { heading: "16. Amenities", body: "Azzurro Hotels is not responsible for any technical issues or natural disasters where there are difficulties in accessing the internet or other amenities but will make its effort in providing the service." },
+  { heading: "17. E-Bike Clause", body: "Due to significant fire safety risk and the recent fires related to ebike batteries, Guests are not allowed to bring E-Bike batteries inside the premises or charge onsite.\n\nAzzurro Hotels will have a random inspection inside the rooms for E-Bike batteries. If an E-Bike battery is found inside the room, it will be removed without warning at the expense of the guest. The guest will be removed from the premises without refund or compensation. The reasons for this are due to the significant risk posed by these ebike batteries to the other guests." },
+  { heading: "18. Duty of Care", body: "Azzurro Hotels is committed to guest safety and comfort. Guests with medical needs (e.g., refrigerated medication or mobility assistance) are encouraged to inform us before check-in to arrange reasonable accommodations. Sharing medical information is voluntary and handled confidentially under the Privacy Act 1988. While we strive to meet all needs, limitations may apply, and alternative recommendations may be recommended if necessary." },
+  { heading: "19. Allergy & Dietary Disclosure", body: "1.1 Complimentary Nature of Meals: Azzurro Hotels provides breakfast and dinner as a complimentary goodwill offering. These meals do not form part of the paid room rate. All meals are prepared in compliance with the Australia New Zealand Food Standards Code and applicable Australian food safety regulations.\n\n1.2 Shared Preparation Environment: Meals are prepared in shared commercial kitchen facilities. We do not operate a dedicated allergen-free kitchen. As a result, we cannot guarantee that meals are free from allergens or cross-contamination.\n\n1.3 Dietary Limitations: Due to the shared preparation environment and the complimentary nature of the meals, Azzurro Hotels does not provide meals tailored to specific dietary requirements. This includes, but is not limited to: Gluten-free meals, Vegan meals, Vegetarian meals, Kosher meals, Medical or allergy-specific diets. Guests with specific dietary needs are advised to make their own meal arrangements outside the hotel.\n\n1.4 Guest Responsibility: While we follow reasonable food handling practices, Azzurro Hotels cannot guarantee the absence of allergens or cross-contamination. Guests with severe allergies or strict dietary requirements should exercise their own discretion before consuming any complimentary meals provided.\n\n1.5 Statutory Rights: Nothing in this clause excludes, restricts, or modifies any non-excludable rights or guarantees available under the Australian Consumer Law." },
+  { heading: "20. Guest Conduct and Compliance with Hotel Policies", body: "To ensure a safe, respectful, and comfortable environment for all guests and staff, all guests are required to comply with the Hotel's Terms and Conditions and to conduct themselves in a respectful and cooperative manner when interacting with hotel staff and other guests.\n\n20.1 Compliance with Hotel Policies: Guests must comply with all hotel policies, procedures, and instructions provided by hotel staff. These policies are in place to maintain safety, operational efficiency, and the comfort of all guests staying at the property. Failure or refusal to comply with the Hotel's Terms and Conditions may result in refusal of service, cancellation of a booking, removal from the property, or further action where appropriate.\n\n20.2 Respectful Behaviour Toward Staff: Guests must treat hotel staff with courtesy and respect at all times. The Hotel maintains a zero-tolerance policy toward behaviour directed at staff that is: abusive, threatening, aggressive, discriminatory, harassing, insulting, or disruptive to hotel operations. Any behaviour that compromises the safety, wellbeing, or ability of staff to perform their duties will not be tolerated.\n\n20.3 Refusal of Service: The Hotel reserves the right to refuse service, terminate a stay, or require a guest to leave the premises without refund where a guest: refuses to comply with hotel policies or staff instructions, engages in abusive, aggressive, or threatening behaviour, causes disturbance to staff or other guests, interferes with hotel operations, or behaves in a manner that the Hotel reasonably considers unacceptable or unsafe.\n\n20.4 Escalation and Enforcement: Where necessary, hotel management may escalate the matter to security personnel or law enforcement. Guests may also be restricted from making future bookings at the Hotel.\n\n20.5 Incident Documentation: The Hotel reserves the right to document any incidents involving guest misconduct or policy violations for operational, legal, or safety purposes." },
+];
+
+const TC_FOOTER = "Guests hereby agree to follow the above policies during their stay with Azzurro Hotels and understand that any violation of the policy will lead to termination of the agreement, and an immediate cancellation of your stay with no refund, forfeiting your deposit and may charge fines accordingly to the violation made.";
+
+async function generateSignedTCPdf() {
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
+
+  const pageWidth = 595, pageHeight = 842, margin = 50;
+  const textWidth = pageWidth - margin * 2;
+  const lineHeight = 14, headingSize = 12, bodySize = 10;
+  const sigReserve = 60; // space reserved at bottom for signature
+
+  let page = pdf.addPage([pageWidth, pageHeight]);
+  let y = pageHeight - margin;
+
+  function newPage() {
+    page = pdf.addPage([pageWidth, pageHeight]);
+    y = pageHeight - margin;
+  }
+
+  function wrapText(text, fontSize, f) {
+    const words = text.split(' ');
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+      const test = line ? line + ' ' + word : word;
+      if (f.widthOfTextAtSize(test, fontSize) > textWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = test;
+      }
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
+  function drawWrapped(text, fontSize, f, color) {
+    const paragraphs = text.split('\n');
+    for (let pi = 0; pi < paragraphs.length; pi++) {
+      const para = paragraphs[pi];
+      if (para.trim() === '') { y -= lineHeight * 0.5; continue; }
+      const lines = wrapText(para, fontSize, f);
+      for (const line of lines) {
+        if (y < margin + sigReserve) newPage();
+        page.drawText(line, { x: margin, y, size: fontSize, font: f, color: color || rgb(0.15, 0.15, 0.15) });
+        y -= lineHeight;
+      }
+      if (pi < paragraphs.length - 1) y -= lineHeight * 0.3;
+    }
+  }
+
+  // Header
+  page.drawText('AZZURRO HOTELS', { x: margin, y, size: 18, font: fontBold, color: rgb(0.1, 0.16, 0.23) });
+  y -= 10;
+  page.drawLine({ start: { x: margin, y }, end: { x: pageWidth - margin, y }, thickness: 1, color: rgb(0.79, 0.66, 0.43) });
+  y -= 20;
+  page.drawText('Terms & Conditions', { x: margin, y, size: 14, font: fontBold, color: rgb(0.1, 0.16, 0.23) });
+  y -= 24;
+
+  // Sections
+  for (const section of TC_SECTIONS) {
+    let bodyText = section.body || '';
+    bodyText = bodyText.replace(/\[HOTEL_ADDRESS\]/g, hotelAddress || 'the hotel premises');
+    bodyText = bodyText.replace(/\[CHECK_IN_DATE\]/g, formatDate(checkIn) || 'the check-in date');
+    bodyText = bodyText.replace(/\[CHECK_OUT_DATE\]/g, formatDate(checkOut) || 'the checkout date');
+    if (section.heading) {
+      if (y < margin + sigReserve + 40) newPage();
+      y -= 8;
+      page.drawText(section.heading, { x: margin, y, size: headingSize, font: fontBold, color: rgb(0.1, 0.16, 0.23) });
+      y -= lineHeight + 4;
+    }
+    if (bodyText) { drawWrapped(bodyText, bodySize, font); y -= 4; }
+  }
+
+  // Footer agreement text
+  if (y < margin + sigReserve + 80) newPage();
+  y -= 16;
+  page.drawLine({ start: { x: margin, y: y + 8 }, end: { x: pageWidth - margin, y: y + 8 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+  y -= 4;
+  drawWrapped(TC_FOOTER, bodySize, font, rgb(0.3, 0.3, 0.3));
+
+  // Embed signature on every page
+  const sigCanvas = document.getElementById('sigPad');
+  const sigDataUrl = sigCanvas.toDataURL('image/png');
+  const sigBytes = await fetch(sigDataUrl).then(r => r.arrayBuffer());
+  const sigImage = await pdf.embedPng(sigBytes);
+  const sigW = 120;
+  const sigH = sigW * (sigImage.height / sigImage.width);
+  const signDateStr = formatDate(new Date().toISOString().slice(0, 10));
+  const allPages = pdf.getPages();
+
+  for (const p of allPages) {
+    p.drawImage(sigImage, { x: pageWidth - margin - sigW, y: 20, width: sigW, height: sigH });
+    p.drawText(`${guestName}  |  ${signDateStr}`, { x: margin, y: 24, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
+    p.drawLine({ start: { x: margin, y: 18 + sigH }, end: { x: pageWidth - margin, y: 18 + sigH }, thickness: 0.5, color: rgb(0.85, 0.85, 0.85) });
+  }
+
+  return await pdf.save();
+}
+
+async function uploadSignedTC() {
+  try {
+    const pdfBytes = await generateSignedTCPdf();
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const formData = new FormData();
+    formData.append('guestID', guestID);
+    formData.append('hotelName', hotelName);
+    formData.append('image', blob, 'signed-tc.pdf');
+
+    const res = await fetch(`${API_BASE}/upload-document`, {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (!data.success) {
+      console.error("Signed T&C upload failed:", data.message);
+    } else {
+      console.log("Signed T&C uploaded successfully");
+    }
+  } catch (e) {
+    console.error("Signed T&C upload error:", e);
+  }
 }
 
 function resetApp() {
