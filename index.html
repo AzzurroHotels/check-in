@@ -905,7 +905,19 @@ function showSuccess(msg) {
   setTimeout(() => toast.classList.remove('show'), 4000);
 }
 
+const PROPERTY_ADDRESSES = {
+  '311134': '82-84 Flinders Street, Darlinghurst, New South Wales 2010',
+  '311267': '90 Wentworth Avenue, Surry Hills, New South Wales 2010',
+  '311271': '22 Allen Street, Pyrmont, New South Wales 2009',
+  '311272': '141-143 Victoria Street, Potts Point, New South Wales 2011',
+};
+
 async function fetchHotelDetails() {
+  // Use known addresses; fall back to Cloudbeds API if unknown property
+  if (PROPERTY_ADDRESSES[propertyID]) {
+    hotelAddress = PROPERTY_ADDRESSES[propertyID];
+    return;
+  }
   try {
     const res = await fetch(`${API_BASE}/hotel-details?propertyID=${propertyID}&hotelName=${hotelName}`);
     const data = await res.json();
@@ -918,13 +930,19 @@ async function fetchHotelDetails() {
   }
 }
 
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
 function updateTC() {
   const box = document.getElementById('tc-content');
   if (!box) return;
   // Replace placeholders in the box content
   let html = box.innerHTML;
-  html = html.replace(/\[CHECK_IN_DATE\]/g, checkIn || 'the check-in date');
-  html = html.replace(/\[CHECK_OUT_DATE\]/g, checkOut || 'the checkout date');
+  html = html.replace(/\[CHECK_IN_DATE\]/g, formatDate(checkIn) || 'the check-in date');
+  html = html.replace(/\[CHECK_OUT_DATE\]/g, formatDate(checkOut) || 'the checkout date');
   html = html.replace(/\[HOTEL_ADDRESS\]/g, hotelAddress || 'the hotel premises');
   box.innerHTML = html;
 }

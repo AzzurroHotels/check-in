@@ -1,7 +1,7 @@
 import os
 import requests
 import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,6 +25,10 @@ for h in HOTELS:
     print(f"Loaded: {h['name']} ({h['api_key'][:10]}...)")
 
 CLOUDBEDS_API_URL = "https://api.cloudbeds.com/api/v1.3"
+
+@app.route('/')
+def serve_index():
+    return send_file('index.html')
 
 @app.route('/api/ping', methods=['GET'])
 def ping():
