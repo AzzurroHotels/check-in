@@ -936,11 +936,13 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
+let tcTemplate = '';
 function updateTC() {
   const box = document.getElementById('tc-content');
   if (!box) return;
-  // Replace placeholders in the box content
-  let html = box.innerHTML;
+  // Store original template on first call
+  if (!tcTemplate) tcTemplate = box.innerHTML;
+  let html = tcTemplate;
   html = html.replace(/\[CHECK_IN_DATE\]/g, formatDate(checkIn) || 'the check-in date');
   html = html.replace(/\[CHECK_OUT_DATE\]/g, formatDate(checkOut) || 'the checkout date');
   html = html.replace(/\[HOTEL_ADDRESS\]/g, hotelAddress || 'the hotel premises');

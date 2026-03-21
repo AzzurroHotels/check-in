@@ -72,17 +72,17 @@ def _check_hotel_for_booking(hotel, conf_number):
         except: pass
         return None
 
-    # Run sub-tasks in parallel for THIS hotel
-    with ThreadPoolExecutor(max_workers=3) as sub_executor:
-        futures = [
+    # Run exact ID searches first, fall back to broad search
+    with ThreadPoolExecutor(max_workers=2) as sub_executor:
+        id_futures = [
             sub_executor.submit(search_by_id, "reservationID"),
             sub_executor.submit(search_by_id, "sourceReservationID"),
-            sub_executor.submit(search_broad)
         ]
-        for f in as_completed(futures):
+        for f in as_completed(id_futures):
             res = f.result()
             if res: return res
-    return None
+    # Only try broad search if exact ID matches failed
+    return search_broad()
 
 def _format_res(res, hotel_name):
     return {
