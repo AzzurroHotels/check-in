@@ -34,55 +34,23 @@ def serve_index():
 def ping():
     return jsonify({"status": "online", "hotels": [h['name'] for h in HOTELS]})
 
-def _check_hotel_for_booking(hotel, conf_number):
-    """Helper function to check a single hotel using multiple parallel strategies."""
+def _search_by_id(hotel, conf_number, param_name):
+    """Search a single hotel by exact reservation ID."""
     if not hotel['api_key']: return None
-    
-    headers = {"x-api-key": hotel['api_key']}
-    
-    # Define search tasks
-    def search_by_id(param_name):
-        try:
-            params = {param_name: conf_number}
-            resp = requests.get(f"{CLOUDBEDS_API_URL}/getReservationsWithRateDetails", 
-                                headers=headers, params=params, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get('success') and data.get('data'):
-                    res = data['data'][0]
-                    if res.get('status') == 'confirmed':
-                        return _format_res(res, hotel['name'])
-        except: pass
-        return None
+    try:
+        headers = {"x-api-key": hotel['api_key']}
+        params = {param_name: conf_number}
+        resp = requests.get(f"{CLOUDBEDS_API_URL}/getReservationsWithRateDetails",
+                            headers=headers, params=params, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('success') and data.get('data'):
+                res = data['data'][0]
+                if res.get('status') == 'confirmed':
+                    return _format_res(res, hotel['name'])
+    except: pass
+    return None
 
-    def search_broad():
-        try:
-            # Narrower window: -7 to +60 days for better performance
-            past = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-            future = (datetime.datetime.now() + datetime.timedelta(days=60)).strftime('%Y-%m-%d')
-            params = {"status": "confirmed", "checkInFrom": past, "checkInTo": future}
-            resp = requests.get(f"{CLOUDBEDS_API_URL}/getReservationsWithRateDetails", 
-                                headers=headers, params=params, timeout=8)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get('success'):
-                    for res in data.get('data', []):
-                        if conf_number in [str(res.get('reservationID', '')), str(res.get('sourceReservationID', ''))]:
-                            return _format_res(res, hotel['name'])
-        except: pass
-        return None
-
-    # Run exact ID searches first, fall back to broad search
-    with ThreadPoolExecutor(max_workers=2) as sub_executor:
-        id_futures = [
-            sub_executor.submit(search_by_id, "reservationID"),
-            sub_executor.submit(search_by_id, "sourceReservationID"),
-        ]
-        for f in as_completed(id_futures):
-            res = f.result()
-            if res: return res
-    # Only try broad search if exact ID matches failed
-    return search_broad()
 
 def _format_res(res, hotel_name):
     return {
@@ -101,16 +69,19 @@ def _format_res(res, hotel_name):
 def verify_booking():
     data = request.json
     conf_number = str(data.get('confirmationNumber', '')).strip()
-    
+
     if not conf_number:
         return jsonify({"success": False, "message": "Confirmation number is required"}), 400
 
-    # Run searches for all hotels in parallel
-    with ThreadPoolExecutor(max_workers=len(HOTELS)) as executor:
-        future_to_hotel = {executor.submit(_check_hotel_for_booking, hotel, conf_number): hotel for hotel in HOTELS}
-        
-        for future in as_completed(future_to_hotel):
-            result = future.result()
+    # Phase 1: Exact ID search across all hotels in parallel
+    with ThreadPoolExecutor(max_workers=len(HOTELS) * 2) as executor:
+        id_futures = []
+        for hotel in HOTELS:
+            id_futures.append(executor.submit(_search_by_id, hotel, conf_number, "reservationID"))
+            id_futures.append(executor.submit(_search_by_id, hotel, conf_number, "sourceReservationID"))
+
+        for f in as_completed(id_futures):
+            result = f.result()
             if result:
                 print(f"--- SUCCESS: Found in {result['hotel']} ---")
                 return jsonify(result)
