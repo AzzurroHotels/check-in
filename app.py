@@ -46,7 +46,7 @@ def _search_by_id(hotel, conf_number, param_name):
             data = resp.json()
             if data.get('success') and data.get('data'):
                 res = data['data'][0]
-                if res.get('status') == 'confirmed':
+                if res.get('status') in ('confirmed', 'not_confirmed'):
                     return _format_res(res, hotel['name'])
     except: pass
     return None
@@ -73,17 +73,22 @@ def verify_booking():
     if not conf_number:
         return jsonify({"success": False, "message": "Confirmation number is required"}), 400
 
-    # Phase 1: Exact ID search across all hotels in parallel
-    with ThreadPoolExecutor(max_workers=len(HOTELS) * 2) as executor:
-        id_futures = []
-        for hotel in HOTELS:
-            id_futures.append(executor.submit(_search_by_id, hotel, conf_number, "reservationID"))
-            id_futures.append(executor.submit(_search_by_id, hotel, conf_number, "sourceReservationID"))
-
-        for f in as_completed(id_futures):
+    # Phase 1: Search by reservationID across all hotels (exact Cloudbeds ID)
+    with ThreadPoolExecutor(max_workers=len(HOTELS)) as executor:
+        futures = [executor.submit(_search_by_id, h, conf_number, "reservationID") for h in HOTELS]
+        for f in as_completed(futures):
             result = f.result()
             if result:
-                print(f"--- SUCCESS: Found in {result['hotel']} ---")
+                print(f"--- SUCCESS (reservationID): Found in {result['hotel']} ---")
+                return jsonify(result)
+
+    # Phase 2: Fall back to sourceReservationID (OTA/booking-site reference numbers)
+    with ThreadPoolExecutor(max_workers=len(HOTELS)) as executor:
+        futures = [executor.submit(_search_by_id, h, conf_number, "sourceReservationID") for h in HOTELS]
+        for f in as_completed(futures):
+            result = f.result()
+            if result:
+                print(f"--- SUCCESS (sourceReservationID): Found in {result['hotel']} ---")
                 return jsonify(result)
 
     print("--- FAILED: No booking found in any hotel ---")
@@ -173,6 +178,80 @@ def complete_checkin():
         return jsonify(response.json()), response.status_code
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/save-guest-ids', methods=['POST'])
+def save_guest_ids():
+    data = request.json
+    reservation_id = data.get('reservationID')
+    hotel_name = data.get('hotelName')
+    main_guest = data.get('mainGuest', {})       # {guestID, name, idNumber}
+    additional_guests = data.get('additionalGuests', [])  # [{guestID?, name, idNumber}]
+
+    hotel = next((h for h in HOTELS if h['name'] == hotel_name), None)
+    if not hotel:
+        return jsonify({"success": False, "message": "Invalid hotel"}), 400
+
+    api_headers = {"x-api-key": hotel['api_key'], "accept": "application/json",
+                   "content-type": "application/x-www-form-urlencoded"}
+
+    # Update document number for each registered guest (has a Cloudbeds guestID)
+    registered = [main_guest] + [g for g in additional_guests if g.get('guestID')]
+    for g in registered:
+        if g.get('guestID') and g.get('idNumber'):
+            requests.put(f"{CLOUDBEDS_API_URL}/putGuest", headers=api_headers,
+                         data={"guestID": str(g['guestID']), "guestDocumentNumber": g['idNumber']},
+                         timeout=15)
+
+    # Post a reservation note as audit trail (covers everyone including unregistered guests)
+    lines = ["Guest ID numbers collected at self check-in:"]
+    lines.append(f"  {main_guest.get('name', 'Main Guest')}: {main_guest.get('idNumber', '-')}")
+    for g in additional_guests:
+        lines.append(f"  {g.get('name', 'Additional Guest')}: {g.get('idNumber', '-')}")
+    note = "\n".join(lines)
+
+    requests.post(f"{CLOUDBEDS_API_URL}/postReservationNote", headers=api_headers,
+                  data={"reservationID": str(reservation_id), "note": note}, timeout=15)
+
+    print(f"--- GUEST IDs SAVED: {reservation_id} ---")
+    return jsonify({"success": True})
+
+
+@app.route('/api/get-guests', methods=['POST'])
+def get_guests():
+    data = request.json
+    reservation_id = data.get('reservationID')
+    hotel_name = data.get('hotelName')
+    property_id = data.get('propertyID')
+
+    hotel = next((h for h in HOTELS if h['name'] == hotel_name), None)
+    if not hotel:
+        return jsonify({"success": False, "message": "Invalid hotel"}), 400
+
+    try:
+        headers = {"x-api-key": hotel['api_key'], "accept": "application/json"}
+        params = {"reservationID": str(reservation_id)}
+        if property_id:
+            params["propertyID"] = str(property_id)
+        resp = requests.get(f"{CLOUDBEDS_API_URL}/getReservation", headers=headers, params=params, timeout=15)
+        result = resp.json()
+        if result.get('success'):
+            guest_list = result['data'].get('guestList', {})
+            guests = []
+            for gid, g in guest_list.items():
+                guests.append({
+                    "guestID": g.get("guestID"),
+                    "name": f"{g.get('guestFirstName', '')} {g.get('guestLastName', '')}".strip(),
+                    "isMainGuest": g.get("isMainGuest", False)
+                })
+            # Sum adults across all assigned rooms
+            assigned = result['data'].get('assigned', [])
+            total_adults = sum(int(r.get('adults', 0)) for r in assigned)
+            return jsonify({"success": True, "guests": guests, "totalAdults": total_adults})
+        else:
+            return jsonify({"success": False, "message": result.get("message", "Failed to fetch guests")})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 @app.route('/api/hotel-details', methods=['GET'])
 def get_hotel_details():

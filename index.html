@@ -397,6 +397,25 @@
   .toast.error { background: #FF4D4D; }
   .toast.success { background: var(--success); }
 
+  /* ── Additional Guests ── */
+  .add-guests-section { margin-top: var(--sp-lg); display: none; }
+  .add-guests-section.visible { display: block; }
+  .add-guests-title {
+    font-size: var(--fs-xs); color: var(--text3);
+    letter-spacing: 0.08em; text-transform: uppercase;
+    margin-bottom: var(--sp-sm);
+    padding-bottom: var(--sp-xs); border-bottom: 1px solid var(--border);
+  }
+  .guest-id-row {
+    background: white; border: 1.5px solid var(--border);
+    border-radius: var(--radius); padding: var(--sp-md);
+    margin-bottom: var(--sp-sm);
+  }
+  .guest-id-name {
+    font-size: var(--fs-sm); color: var(--navy);
+    font-weight: 500; margin-bottom: var(--sp-xs);
+  }
+
   /* ── Scrollbar ── */
   .tc-box::-webkit-scrollbar { width: 4px; }
   .tc-box::-webkit-scrollbar-track { background: var(--cream2); }
@@ -645,6 +664,22 @@
       <div class="upload-alt">
         <label>Or upload a photo instead <input type="file" accept="image/*" capture="environment" style="display:none" onchange="uploadPhoto(this,'id')"></label>
       </div>
+      <div class="main-guest-id-section" id="main-guest-id-section" style="display:none; margin-top: var(--sp-md);">
+        <div class="add-guests-title" style="margin-bottom: var(--sp-xs);">Main Guest — ID / Passport Number</div>
+        <div class="guest-id-row">
+          <div class="guest-id-name" id="main-guest-name-label"></div>
+          <div class="field-wrap">
+            <label class="field-label">Passport / ID Number</label>
+            <input class="field-input" type="text" id="main-guest-id-number"
+              placeholder="Enter ID or passport number"
+              oninput="mainGuestIDNumber = this.value.trim(); updateBottom();">
+          </div>
+        </div>
+      </div>
+      <div class="add-guests-section" id="add-guests-section">
+        <div class="add-guests-title">Additional Guests — ID / Passport Numbers</div>
+        <div id="add-guests-inputs"></div>
+      </div>
     </div>
 
     <!-- Screen 5: Signature -->
@@ -692,6 +727,7 @@
             <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg></div>
             <div class="summary-label">Signed T&C uploaded</div>
           </div>
+          <div id="add-guests-summary"></div>
           <div class="summary-row" style="border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 12px;">
             <div class="summary-label" style="color: var(--text3); font-size: 12px;">
               Guest: <span id="display-guest-name" style="color: var(--text); font-weight: 500;">-</span><br>
@@ -737,8 +773,8 @@ let sigDrawn = false;
 let selfieStream = null, idStream = null;
 
 // Cloudbeds Data
-const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-  ? "http://127.0.0.1:5005/api" 
+const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? "http://127.0.0.1:5005/api"
   : window.location.origin + "/api";
 let reservationID = null;
 let guestName = '';
@@ -748,6 +784,105 @@ let propertyID = '';
 let checkIn = '';
 let checkOut = '';
 let hotelAddress = '';
+
+// Additional guests
+let allGuests = [];
+let additionalGuestIDs = {}; // { guestID: idNumber }
+let guestsFetched = false;
+let mainGuestIDNumber = '';
+
+async function fetchGuests() {
+  try {
+    const res = await fetch(`${API_BASE}/get-guests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reservationID, hotelName, propertyID })
+    });
+    const data = await res.json();
+    if (data.success) {
+      allGuests = data.guests;
+      guestsFetched = true;
+      renderAdditionalGuests(data.totalAdults || 1);
+    } else {
+      guestsFetched = true; // API responded but no guests — treat as single guest
+    }
+  } catch (e) {
+    console.error("Error fetching guests:", e);
+    guestsFetched = true; // Allow proceeding on network error
+  }
+}
+
+function renderAdditionalGuests(totalAdults) {
+  const section = document.getElementById('add-guests-section');
+  const container = document.getElementById('add-guests-inputs');
+  additionalGuestIDs = {};
+
+  // Set main guest name label
+  const mainGuest = allGuests.find(g => g.isMainGuest);
+  const mainNameLabel = document.getElementById('main-guest-name-label');
+  if (mainNameLabel && mainGuest && mainGuest.name) mainNameLabel.textContent = 'Name: ' + mainGuest.name;
+
+  // Registered non-main guests (already in Cloudbeds guestList)
+  const registeredExtra = allGuests.filter(g => !g.isMainGuest);
+  // Unregistered additional adults (booked but not yet in guestList)
+  const unregisteredCount = Math.max(0, totalAdults - allGuests.length);
+
+  if (registeredExtra.length === 0 && unregisteredCount === 0) {
+    section.classList.remove('visible');
+    return;
+  }
+
+  section.classList.add('visible');
+
+  // Registered extras: prefilled name, just need ID number
+  registeredExtra.forEach(g => { additionalGuestIDs[g.guestID] = ''; });
+  const registeredHTML = registeredExtra.map(g => `
+    <div class="guest-id-row">
+      <div class="guest-id-name">${g.name}</div>
+      <div class="field-wrap">
+        <label class="field-label">Passport / ID Number</label>
+        <input class="field-input" type="text" id="guest-id-${g.guestID}"
+          placeholder="Enter ID or passport number"
+          oninput="additionalGuestIDs['${g.guestID}']=this.value.trim(); updateBottom();">
+      </div>
+    </div>
+  `).join('');
+
+  // Unregistered extras: need name + ID number
+  const unregisteredHTML = Array.from({ length: unregisteredCount }, (_, i) => {
+    const key = `unregistered_${i}`;
+    additionalGuestIDs[key] = '';
+    return `
+      <div class="guest-id-row">
+        <div class="guest-id-name">Additional Guest ${i + 1}</div>
+        <div class="field-wrap" style="margin-bottom: var(--sp-sm);">
+          <label class="field-label">Full Name</label>
+          <input class="field-input" type="text" id="guest-name-${key}"
+            placeholder="Enter full name"
+            oninput="additionalGuestIDs['${key}_name']=this.value.trim(); updateBottom();">
+        </div>
+        <div class="field-wrap">
+          <label class="field-label">Passport / ID Number</label>
+          <input class="field-input" type="text" id="guest-id-${key}"
+            placeholder="Enter ID or passport number"
+            oninput="additionalGuestIDs['${key}']=this.value.trim(); updateBottom();">
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = registeredHTML + unregisteredHTML;
+
+  // Add name keys for unregistered guests
+  Array.from({ length: unregisteredCount }, (_, i) => {
+    additionalGuestIDs[`unregistered_${i}_name`] = '';
+  });
+}
+
+function allAdditionalIDsFilled() {
+  const vals = Object.values(additionalGuestIDs);
+  return vals.length === 0 || vals.every(v => v.length >= 2);
+}
 
 window.onerror = function(msg, url, line) {
   alert("JS Error: " + msg + "\nAt: " + url + ":" + line);
@@ -787,7 +922,7 @@ function isStepValid() {
   }
   if (current === 2) return agreed;
   if (current === 3) return selfieCaptured;
-  if (current === 4) return idCaptured;
+  if (current === 4) return idCaptured && guestsFetched && mainGuestIDNumber.length >= 2 && allAdditionalIDsFilled();
   if (current === 5) return sigDrawn;
   return true;
 }
@@ -805,6 +940,25 @@ function goTo(n) {
   if (current === 5) initSig();
   if (current === 6) {
     document.getElementById('guest-name-display').textContent = guestName;
+    const summaryEl = document.getElementById('add-guests-summary');
+    if (summaryEl) {
+      const registeredRows = allGuests.filter(g => !g.isMainGuest).map(g =>
+        `<div class="summary-row">
+          <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg></div>
+          <div class="summary-label">${g.name} — ID: ${additionalGuestIDs[g.guestID] || '-'}</div>
+        </div>`
+      );
+      const unregisteredKeys = Object.keys(additionalGuestIDs).filter(k => k.startsWith('unregistered_') && !k.endsWith('_name'));
+      const unregisteredRows = unregisteredKeys.map(k => {
+        const name = additionalGuestIDs[k + '_name'] || 'Additional Guest';
+        const id = additionalGuestIDs[k] || '-';
+        return `<div class="summary-row">
+          <div class="summary-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2"><path d="M9 11l3 3L22 4"/></svg></div>
+          <div class="summary-label">${name} — ID: ${id}</div>
+        </div>`;
+      });
+      summaryEl.innerHTML = [...registeredRows, ...unregisteredRows].join('');
+    }
     startCountdown();
   }
   window.scrollTo(0, 0);
@@ -841,7 +995,7 @@ async function goNext() {
           document.getElementById('display-res-id').textContent = reservationID;
           document.getElementById('display-guest-name').textContent = guestName;
           
-          await fetchHotelDetails();
+          await Promise.all([fetchHotelDetails(), fetchGuests()]);
           updateTC();
           
           goTo(2);
@@ -860,13 +1014,31 @@ async function goNext() {
   if (current === 5) {
     showLoader("Finalizing your check-in...");
     try {
-      // Upload signed T&C PDF and complete check-in in parallel
+      // Build guest ID payload
+      const mainGuest = allGuests.find(g => g.isMainGuest) || {};
+      const registeredExtra = allGuests.filter(g => !g.isMainGuest);
+      const unregisteredKeys = Object.keys(additionalGuestIDs).filter(k => k.startsWith('unregistered_') && !k.endsWith('_name'));
+      const additionalGuestsPayload = [
+        ...registeredExtra.map(g => ({ guestID: g.guestID, name: g.name, idNumber: additionalGuestIDs[g.guestID] || '' })),
+        ...unregisteredKeys.map(k => ({ name: additionalGuestIDs[k + '_name'] || 'Additional Guest', idNumber: additionalGuestIDs[k] || '' }))
+      ];
+
+      // Upload signed T&C, complete check-in, and save guest IDs in parallel
       const [tcResult, checkinRes] = await Promise.all([
         uploadSignedTC(),
         fetch(`${API_BASE}/complete-checkin`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reservationID, hotelName, propertyID })
+        }),
+        fetch(`${API_BASE}/save-guest-ids`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reservationID, hotelName,
+            mainGuest: { guestID: mainGuest.guestID, name: mainGuest.name, idNumber: mainGuestIDNumber },
+            additionalGuests: additionalGuestsPayload
+          })
         })
       ]);
       const data = await checkinRes.json();
@@ -1023,7 +1195,11 @@ function capturePhoto(type) {
   btn.style.display = 'none';
   retake.style.display = 'block';
   if (type === 'selfie') selfieCaptured = true;
-  else idCaptured = true;
+  else {
+    idCaptured = true;
+    const mainIDSection = document.getElementById('main-guest-id-section');
+    if (mainIDSection) mainIDSection.style.display = 'block';
+  }
   updateBottom();
 
   // Upload to Cloudbeds
@@ -1078,7 +1254,14 @@ function retakePhoto(type) {
   btn.style.display = 'flex';
   retake.style.display = 'none';
   if (type === 'selfie') selfieCaptured = false;
-  else idCaptured = false;
+  else {
+    idCaptured = false;
+    mainGuestIDNumber = '';
+    const mainIDInput = document.getElementById('main-guest-id-number');
+    if (mainIDInput) mainIDInput.value = '';
+    const mainIDSection = document.getElementById('main-guest-id-section');
+    if (mainIDSection) mainIDSection.style.display = 'none';
+  }
   updateBottom();
   startCamera(type);
 }
@@ -1104,7 +1287,11 @@ function uploadPhoto(input, type) {
       btn.style.display = 'none';
       retake.style.display = 'block';
       if (type === 'selfie') selfieCaptured = true;
-      else idCaptured = true;
+      else {
+        idCaptured = true;
+        const mainIDSection = document.getElementById('main-guest-id-section');
+        if (mainIDSection) mainIDSection.style.display = 'block';
+      }
       updateBottom();
       // Upload the manually selected file to Cloudbeds
       uploadToCloudbeds(type);
@@ -1316,6 +1503,17 @@ async function uploadSignedTC() {
 function resetApp() {
   stopCountdown();
   agreed = false; selfieCaptured = false; idCaptured = false; sigDrawn = false;
+  allGuests = []; additionalGuestIDs = {}; guestsFetched = false; mainGuestIDNumber = '';
+  const mainIDInput = document.getElementById('main-guest-id-number');
+  if (mainIDInput) mainIDInput.value = '';
+  const mainIDSection = document.getElementById('main-guest-id-section');
+  if (mainIDSection) mainIDSection.style.display = 'none';
+  const agSection = document.getElementById('add-guests-section');
+  if (agSection) agSection.classList.remove('visible');
+  const agContainer = document.getElementById('add-guests-inputs');
+  if (agContainer) agContainer.innerHTML = '';
+  const agSummary = document.getElementById('add-guests-summary');
+  if (agSummary) agSummary.innerHTML = '';
   ['confirmation-number', 'room-num'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });

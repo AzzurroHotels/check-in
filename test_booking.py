@@ -20,11 +20,9 @@ CLOUDBEDS_API_URL = "https://api.cloudbeds.com/api/v1.3"
 keys_str = os.getenv("CLOUDBEDS_API_KEYS", "")
 api_keys = [k.strip() for k in keys_str.split(",") if k.strip()]
 
-if not api_keys:
-    print("ERROR: No API keys found in .env (CLOUDBEDS_API_KEYS)")
-    sys.exit(1)
-
-API_KEY = api_keys[0]
+# Override: use dedicated test key with reservation read/write scope
+API_KEY = "cbat_bNFVy31gZeJRxzUfmKvz9tFeXOJxMWY1"
+api_keys = [API_KEY]
 HEADERS = {"x-api-key": API_KEY, "accept": "application/json"}
 
 
@@ -86,7 +84,7 @@ def create_reservation():
             if property_id:
                 payload["propertyID"] = str(property_id)
 
-            print(f"  Dates {start} → {end}...", end=" ")
+            print(f"  Dates {start} -> {end}...", end=" ")
             resp = requests.post(
                 f"{CLOUDBEDS_API_URL}/postReservation",
                 headers=headers,
