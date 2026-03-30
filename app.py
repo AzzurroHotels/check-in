@@ -115,6 +115,11 @@ def verify_booking():
         return jsonify({"success": False, "message": msg}), 400
 
     # Phase 2: Fall back to sourceReservationID (OTA/booking-site reference numbers)
+    # Only for non-numeric inputs — numeric IDs are Cloudbeds reservation IDs handled by Phase 1
+    if conf_number.isdigit():
+        print("--- FAILED: Numeric ID not found in any hotel ---")
+        return jsonify({"success": False, "message": "No confirmed booking found for this reservation ID."}), 404
+
     with ThreadPoolExecutor(max_workers=len(HOTELS)) as executor:
         futures = {executor.submit(_search_by_id, h, conf_number, "sourceReservationID"): h for h in HOTELS}
         results = []
