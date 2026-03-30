@@ -48,7 +48,7 @@ def create_reservation():
         sys.exit(1)
 
     # Try each room type with multiple date ranges
-    date_offsets = [(1, 2), (3, 4), (7, 8), (14, 15), (30, 31), (60, 61)]
+    date_offsets = [(0, 1), (1, 2), (3, 4), (7, 8), (14, 15), (30, 31), (60, 61)]
 
     for room in all_room_types:
         room_type_id = room["roomTypeID"]
@@ -75,7 +75,7 @@ def create_reservation():
                 "rooms[0][roomTypeID]": str(room_type_id),
                 "rooms[0][quantity]": "1",
                 "adults[0][roomTypeID]": str(room_type_id),
-                "adults[0][quantity]": "1",
+                "adults[0][quantity]": "2",
                 "children[0][roomTypeID]": str(room_type_id),
                 "children[0][quantity]": "0",
                 "paymentMethod": "cash",

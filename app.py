@@ -30,13 +30,20 @@ CLOUDBEDS_API_URL = "https://api.cloudbeds.com/api/v1.3"
 def serve_index():
     return send_file('index.html')
 
+@app.route('/<path:filename>')
+def serve_static(filename):
+    import os
+    if os.path.isfile(filename):
+        return send_file(filename)
+    return '', 404
+
 @app.route('/api/ping', methods=['GET'])
 def ping():
     return jsonify({"status": "online", "hotels": [h['name'] for h in HOTELS]})
 
 def _search_by_id(hotel, conf_number, param_name):
-    """Search a single hotel by exact reservation ID."""
-    if not hotel['api_key']: return None
+    """Search a single hotel by exact reservation ID. Returns (result, status) tuple."""
+    if not hotel['api_key']: return None, None
     try:
         headers = {"x-api-key": hotel['api_key']}
         params = {param_name: conf_number}
@@ -46,10 +53,14 @@ def _search_by_id(hotel, conf_number, param_name):
             data = resp.json()
             if data.get('success') and data.get('data'):
                 res = data['data'][0]
-                if res.get('status') in ('confirmed', 'not_confirmed'):
-                    return _format_res(res, hotel['name'])
+                status = res.get('status', '')
+                if status in ('confirmed', 'not_confirmed'):
+                    return _format_res(res, hotel['name']), status
+                else:
+                    # Found but not in a checkable state — return status for reporting
+                    return None, status
     except: pass
-    return None
+    return None, None
 
 
 def _format_res(res, hotel_name):
@@ -74,22 +85,60 @@ def verify_booking():
         return jsonify({"success": False, "message": "Confirmation number is required"}), 400
 
     # Phase 1: Search by reservationID across all hotels (exact Cloudbeds ID)
+    found_status = None
     with ThreadPoolExecutor(max_workers=len(HOTELS)) as executor:
-        futures = [executor.submit(_search_by_id, h, conf_number, "reservationID") for h in HOTELS]
+        futures = {executor.submit(_search_by_id, h, conf_number, "reservationID"): h for h in HOTELS}
+        results = []
         for f in as_completed(futures):
-            result = f.result()
+            result, status = f.result()
             if result:
-                print(f"--- SUCCESS (reservationID): Found in {result['hotel']} ---")
-                return jsonify(result)
+                results.append(result)
+            elif status:
+                found_status = status  # reservation exists but wrong status
+
+        # Return the match (collect all, don't race)
+        if results:
+            chosen = results[0]
+            print(f"--- SUCCESS (reservationID): Found in {chosen['hotel']} ---")
+            return jsonify(chosen)
+
+    # If reservation was found but not in a valid state, report it clearly
+    if found_status:
+        status_messages = {
+            'canceled': 'This reservation has been canceled.',
+            'checked_in': 'This reservation has already been checked in.',
+            'checked_out': 'This reservation has already been checked out.',
+            'no_show': 'This reservation is marked as a no-show.',
+        }
+        msg = status_messages.get(found_status, f'Reservation found but status is "{found_status}".')
+        print(f"--- FOUND BUT STATUS: {found_status} ---")
+        return jsonify({"success": False, "message": msg}), 400
 
     # Phase 2: Fall back to sourceReservationID (OTA/booking-site reference numbers)
     with ThreadPoolExecutor(max_workers=len(HOTELS)) as executor:
-        futures = [executor.submit(_search_by_id, h, conf_number, "sourceReservationID") for h in HOTELS]
+        futures = {executor.submit(_search_by_id, h, conf_number, "sourceReservationID"): h for h in HOTELS}
+        results = []
         for f in as_completed(futures):
-            result = f.result()
+            result, status = f.result()
             if result:
-                print(f"--- SUCCESS (sourceReservationID): Found in {result['hotel']} ---")
-                return jsonify(result)
+                results.append(result)
+            elif status:
+                found_status = status
+
+        if results:
+            chosen = results[0]
+            print(f"--- SUCCESS (sourceReservationID): Found in {chosen['hotel']} ---")
+            return jsonify(chosen)
+
+    if found_status:
+        status_messages = {
+            'canceled': 'This reservation has been canceled.',
+            'checked_in': 'This reservation has already been checked in.',
+            'checked_out': 'This reservation has already been checked out.',
+            'no_show': 'This reservation is marked as a no-show.',
+        }
+        msg = status_messages.get(found_status, f'Reservation found but status is "{found_status}".')
+        return jsonify({"success": False, "message": msg}), 400
 
     print("--- FAILED: No booking found in any hotel ---")
     return jsonify({"success": False, "message": "No confirmed booking found for this ID across any hotel."}), 404
