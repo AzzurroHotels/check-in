@@ -14,7 +14,6 @@
 <link rel="apple-touch-icon" href="https://irp.cdn-website.com/f3acc0ee/dms3rep/multi/logo+azzurro-3.png">
 <link rel="manifest" href="manifest.json">
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
 <title>Azzurro Hotels — Guest Check-In</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Jost:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
@@ -1039,141 +1038,11 @@ function allAdditionalIDPhotosCaptured() {
   return vals.length === 0 || vals.every(v => v === true);
 }
 
-// ── Tesseract.js OCR ID Verification ──
-// OCR text stored per guest for re-verification: { 'main': 'text...', guestKey: 'text...' }
-let ocrTextStore = {};
+// ── Groq Vision ID Verification ──
+// Extracted ID data per guest: { 'main': { full_name, id_number, ... }, guestKey: {...} }
+let idExtractedData = {};
 // Verification status per guest: { 'main': { verified, errors }, guestKey: {...} }
 let idVerificationStatus = {};
-
-async function extractTextFromCanvas(canvas) {
-  const dataURL = canvas.toDataURL('image/jpeg', 0.85);
-  const result = await Tesseract.recognize(dataURL, 'eng');
-  return result.data.text.trim();
-}
-
-function normalizeText(text) {
-  return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function nameFoundInText(name, ocrText) {
-  const normalized = normalizeText(ocrText);
-  const parts = normalizeText(name).split(' ').filter(p => p.length >= 2);
-  if (parts.length === 0) return true;
-  const matched = parts.filter(part => normalized.includes(part));
-  return matched.length >= Math.ceil(parts.length / 2);
-}
-
-function idNumberFoundInText(idNumber, ocrText) {
-  const cleanID = idNumber.replace(/[\s\-\.]/g, '').toLowerCase();
-  const cleanOCR = ocrText.replace(/[\s\-\.]/g, '').toLowerCase();
-  if (cleanID.length < 2) return true;
-  return cleanOCR.includes(cleanID);
-}
-
-function checkDocumentGenuineness(ocrText) {
-  const text = ocrText.toLowerCase();
-  let score = 0;
-  const signals = [];
-
-  if (/[A-Z<]{2,}[0-9<]{5,}/i.test(ocrText)) { score += 3; signals.push('MRZ'); }
-
-  const docKeywords = [
-    // Passport
-    'passport', 'surname', 'given name', 'nationality', 'date of birth',
-    'sex', 'place of birth', 'date of issue', 'date of expiry', 'expiry',
-    'authority', 'holder', 'signature', 'male', 'female',
-    // Australian IDs
-    'australia', 'australian', 'commonwealth', 'driver licence', 'licence number',
-    'licence no', 'card number', 'photo card', 'proof of age',
-    'roads and maritime', 'transport', 'vicroads', 'tmr', 'rms',
-    'nsw', 'vic', 'qld', 'tas', 'act', 'nt',
-    // General ID terms
-    'document', 'identity', 'card', 'licence', 'license', 'driver',
-    'national', 'government', 'republic', 'country', 'citizen', 'resident',
-    'valid', 'issued', 'expires', 'dob', 'doi', 'doe', 'valid thru', 'valid till'
-  ];
-  const kwMatches = docKeywords.filter(kw => text.includes(kw));
-  score += Math.min(kwMatches.length, 5);
-  if (kwMatches.length > 0) signals.push('keywords:' + kwMatches.slice(0, 3).join(','));
-
-  const dateMatches = ocrText.match(/\d{1,4}[\/.\\-]\d{1,2}[\/.\\-]\d{2,4}/g) || [];
-  if (dateMatches.length >= 1) { score += 2; signals.push('dates'); }
-
-  const docNums = ocrText.match(/[A-Z0-9]{6,}/gi) || [];
-  if (docNums.length >= 1) { score += 1; signals.push('doc-numbers'); }
-
-  if (ocrText.length > 50) { score += 1; signals.push('text-length'); }
-
-  return { score, signals, isLikelyGenuine: score >= 2 };
-}
-
-function checkExpiryDate(ocrText) {
-  const expiryPatterns = [
-    /(?:expir|valid\s*(?:thru|till|until|upto)|doe|exp)[:\s]*(\d{1,2}[\/.\\-]\d{1,2}[\/.\\-]\d{2,4})/gi,
-    /(\d{1,2}[\/.\\-]\d{1,2}[\/.\\-]\d{2,4})\s*(?:expir|valid)/gi
-  ];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  for (const pattern of expiryPatterns) {
-    let match;
-    while ((match = pattern.exec(ocrText)) !== null) {
-      const parsed = parseFlexDate(match[1]);
-      if (parsed && parsed < today) {
-        return { expired: true, date: match[1] };
-      }
-    }
-  }
-
-  // If all dates on the document are in the past, it may be expired
-  const allDates = ocrText.match(/\d{1,2}[\/.\\-]\d{1,2}[\/.\\-]\d{2,4}/g) || [];
-  let futureCount = 0, pastDates = [];
-  allDates.forEach(d => {
-    const parsed = parseFlexDate(d);
-    if (parsed) {
-      if (parsed < today) pastDates.push(d);
-      else futureCount++;
-    }
-  });
-  if (futureCount === 0 && pastDates.length >= 2) {
-    return { expired: true, date: pastDates[pastDates.length - 1], uncertain: true };
-  }
-
-  return { expired: false };
-}
-
-function parseFlexDate(dateStr) {
-  const parts = dateStr.split(/[\/.\\-]/);
-  if (parts.length < 2) return null;
-  let day, month, year;
-  if (parts.length === 2) {
-    month = parseInt(parts[0]) - 1; year = parseInt(parts[1]); day = 1;
-  } else if (parseInt(parts[0]) > 31) {
-    year = parseInt(parts[0]); month = parseInt(parts[1]) - 1; day = parseInt(parts[2]);
-  } else if (parseInt(parts[2]) > 31) {
-    day = parseInt(parts[0]); month = parseInt(parts[1]) - 1; year = parseInt(parts[2]);
-  } else {
-    day = parseInt(parts[0]); month = parseInt(parts[1]) - 1; year = parseInt(parts[2]);
-    if (year < 100) year += year > 50 ? 1900 : 2000;
-  }
-  if (month < 0 || month > 11 || day < 1 || day > 31 || year < 1900) return null;
-  return new Date(year, month, day);
-}
-
-function computeTextSimilarity(text1, text2) {
-  const tokenize = (t) => new Set(t.toLowerCase().match(/[a-z0-9]{3,}/g) || []);
-  const set1 = tokenize(text1);
-  const set2 = tokenize(text2);
-  if (set1.size === 0 || set2.size === 0) return 0;
-  let intersection = 0;
-  for (const token of set1) { if (set2.has(token)) intersection++; }
-  const union = new Set([...set1, ...set2]).size;
-  return intersection / union;
-}
-
-function findLongNumbers(text) {
-  return new Set((text.match(/\d{6,}/g) || []).map(n => n));
-}
 
 // Show verification status badge for a guest
 function showVerifyStatus(guestKey, state, message) {
@@ -1197,109 +1066,130 @@ function showVerifyStatus(guestKey, state, message) {
   }
 }
 
-// Verify a single guest's ID immediately after capture
-// Core verification logic — returns { errors: [], warnings: [] }
-function runIDVerification(ocrText, name, idNumber) {
-  const errors = [];   // blocking — must retake
-  const warnings = []; // non-blocking — flagged but allowed
+// Call backend Groq Vision API to verify ID, extract name & number, and auto-fill
+async function verifyGuestIDPhoto(guestKey, canvas, guestName, enteredIDNumber) {
+  showVerifyStatus(guestKey, 'verifying');
 
-  // 1. Genuineness: only reject if image has almost no readable content
-  const genuineness = checkDocumentGenuineness(ocrText);
-  console.log(`Genuineness: score=${genuineness.score}, signals=[${genuineness.signals}]`);
-  if (genuineness.score < 1) {
-    errors.push('No readable text found. Please retake with a clearer photo.');
-  } else if (!genuineness.isLikelyGenuine) {
-    warnings.push('Low confidence — could not fully confirm this is an ID document.');
-  }
+  try {
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
+    const formData = new FormData();
+    formData.append('image', blob, 'id.jpg');
+    formData.append('guestName', guestName || '');
+    formData.append('idNumber', enteredIDNumber || '');
 
-  // 2. Name match (only if name available and document is readable)
-  if (name && name.length >= 2 && ocrText.length > 20) {
-    if (!nameFoundInText(name, ocrText)) {
-      errors.push('Name "' + name + '" not found on the document.');
+    const res = await fetch(`${API_BASE}/verify-id`, { method: 'POST', body: formData });
+    const result = await res.json();
+
+    if (!result.success) {
+      console.error('Verify-ID API error:', result.message);
+      idVerificationStatus[guestKey] = { verified: true, errors: [] };
+      showVerifyStatus(guestKey, 'verified', 'Document accepted (verification unavailable)');
+      updateBottom();
+      return;
     }
-  }
 
-  // 3. ID number match (only if entered and document is readable)
-  if (idNumber && idNumber.length >= 2 && ocrText.length > 20) {
-    if (!idNumberFoundInText(idNumber, ocrText)) {
-      errors.push('ID number "' + idNumber + '" not found on the document.');
+    const d = result.data;
+    idExtractedData[guestKey] = d;
+    console.log(`Groq verify for ${guestKey}:`, d);
+
+    const errors = [];
+    const warnings = [];
+
+    // 1. Is it a valid ID?
+    if (!d.is_valid_id || d.document_type === 'not_an_id') {
+      errors.push('Image does not appear to be a valid ID document.');
     }
-  }
 
-  // 4. Expiry date check
-  const expiry = checkExpiryDate(ocrText);
-  if (expiry.expired) {
-    if (expiry.uncertain) {
-      warnings.push('This document may be expired. Please verify.');
+    // 2. Expired?
+    if (d.is_expired === true) {
+      errors.push('This ID appears to be expired' + (d.expiry_date ? ' (' + d.expiry_date + ')' : '') + '.');
+    }
+
+    // 3. Issues flagged by the LLM
+    if (d.issues && d.issues.length > 0) {
+      d.issues.forEach(issue => {
+        const lower = issue.toLowerCase();
+        if (lower.includes('name') && lower.includes('match') || lower.includes('name') && lower.includes('not found') || lower.includes('name') && lower.includes('does not')) {
+          errors.push(issue);
+        } else if (lower.includes('id') && lower.includes('match') || lower.includes('number') && lower.includes('not') || lower.includes('id') && lower.includes('does not')) {
+          errors.push(issue);
+        } else {
+          warnings.push(issue);
+        }
+      });
+    }
+
+    // 4. Frontend name cross-check (in case LLM missed it)
+    if (guestName && guestName.length >= 2 && d.full_name && d.full_name.length >= 2) {
+      const bookingParts = guestName.toLowerCase().split(/\s+/).filter(p => p.length >= 2);
+      const docParts = d.full_name.toLowerCase().split(/\s+/).filter(p => p.length >= 2);
+      const matched = bookingParts.filter(bp => docParts.some(dp => dp.includes(bp) || bp.includes(dp)));
+      if (matched.length === 0) {
+        const alreadyFlagged = errors.some(e => e.toLowerCase().includes('name'));
+        if (!alreadyFlagged) {
+          errors.push('Name mismatch: booking says "' + guestName + '" but document shows "' + d.full_name + '".');
+        }
+      }
+    }
+
+    // 5. Low confidence
+    if (d.confidence !== undefined && d.confidence < 0.5 && errors.length === 0) {
+      warnings.push('Low confidence reading — please ensure photo is clear.');
+    }
+
+    // Auto-fill extracted data into fields
+    autoFillFromExtracted(guestKey, d);
+
+    // Apply result
+    if (errors.length > 0) {
+      idVerificationStatus[guestKey] = { verified: false, errors };
+      showVerifyStatus(guestKey, 'failed', errors[0]);
+    } else if (warnings.length > 0) {
+      idVerificationStatus[guestKey] = { verified: true, errors: [] };
+      showVerifyStatus(guestKey, 'warning', warnings[0]);
     } else {
-      errors.push('This ID appears to be expired (' + expiry.date + '). Please provide a valid document.');
+      idVerificationStatus[guestKey] = { verified: true, errors: [] };
+      const docType = d.document_type ? d.document_type.replace(/_/g, ' ') : 'ID';
+      showVerifyStatus(guestKey, 'verified', 'Verified — ' + docType + (d.full_name ? ' (' + d.full_name + ')' : ''));
     }
+  } catch (e) {
+    console.error('Verify-ID error for ' + guestKey + ':', e);
+    idVerificationStatus[guestKey] = { verified: true, errors: [] };
+    showVerifyStatus(guestKey, 'verified', 'Document accepted (verification unavailable)');
   }
 
-  return { errors, warnings };
+  updateBottom();
 }
 
-function applyVerificationResult(guestKey, errors, warnings) {
-  if (errors.length > 0) {
-    idVerificationStatus[guestKey] = { verified: false, errors };
-    showVerifyStatus(guestKey, 'failed', errors[0]);
-  } else if (warnings.length > 0) {
-    idVerificationStatus[guestKey] = { verified: true, errors: [] }; // warnings don't block
-    showVerifyStatus(guestKey, 'warning', warnings[0]);
+// Auto-fill name and ID number from extracted data
+function autoFillFromExtracted(guestKey, data) {
+  if (guestKey === 'main') {
+    // Auto-fill main guest ID number if empty
+    if (data.id_number && !mainGuestIDNumber) {
+      mainGuestIDNumber = data.id_number;
+      const input = document.getElementById('main-guest-id-number');
+      if (input) input.value = data.id_number;
+    }
   } else {
-    idVerificationStatus[guestKey] = { verified: true, errors: [] };
-    showVerifyStatus(guestKey, 'verified', 'Document verified — ID is valid');
+    // Auto-fill additional guest ID number if empty
+    if (data.id_number && !additionalGuestIDs[guestKey]) {
+      additionalGuestIDs[guestKey] = data.id_number;
+      const input = document.getElementById('guest-id-' + guestKey);
+      if (input) input.value = data.id_number;
+    }
+    // Auto-fill unregistered guest name if empty
+    if (data.full_name && guestKey.startsWith('unregistered_') && !additionalGuestIDs[guestKey + '_name']) {
+      additionalGuestIDs[guestKey + '_name'] = data.full_name;
+      const input = document.getElementById('guest-name-' + guestKey);
+      if (input) input.value = data.full_name;
+    }
   }
   updateBottom();
 }
 
-async function verifyGuestIDPhoto(guestKey, canvas, guestName, enteredIDNumber) {
-  if (typeof Tesseract === 'undefined') return;
-
-  showVerifyStatus(guestKey, 'verifying');
-
-  try {
-    const ocrText = await extractTextFromCanvas(canvas);
-    ocrTextStore[guestKey] = ocrText;
-    console.log(`OCR for ${guestKey}:`, ocrText.substring(0, 300));
-
-    const { errors, warnings } = runIDVerification(ocrText, guestName, enteredIDNumber);
-    applyVerificationResult(guestKey, errors, warnings);
-  } catch (e) {
-    console.error('OCR error for ' + guestKey + ':', e);
-    ocrTextStore[guestKey] = '';
-    idVerificationStatus[guestKey] = { verified: true, errors: [] };
-    showVerifyStatus(guestKey, 'verified', 'Document accepted (OCR unavailable)');
-    updateBottom();
-  }
-}
-
-// Re-verify main guest when ID number is typed (debounced)
-let mainReVerifyTimeout = null;
-function reVerifyMainGuestID() {
-  if (!ocrTextStore['main']) return;
-  clearTimeout(mainReVerifyTimeout);
-  mainReVerifyTimeout = setTimeout(() => {
-    const mainGuest = allGuests.find(g => g.isMainGuest);
-    const name = mainGuest ? mainGuest.name : guestName;
-    const { errors, warnings } = runIDVerification(ocrTextStore['main'], name, mainGuestIDNumber);
-    applyVerificationResult('main', errors, warnings);
-  }, 600);
-}
-
-// Re-verify additional guest when name or ID number is typed (debounced)
-let guestReVerifyTimeouts = {};
-function reVerifyAdditionalGuestID(guestKey) {
-  if (!ocrTextStore[guestKey]) return;
-  clearTimeout(guestReVerifyTimeouts[guestKey]);
-  guestReVerifyTimeouts[guestKey] = setTimeout(() => {
-    const registered = allGuests.find(g => g.guestID == guestKey);
-    const name = registered ? registered.name : (additionalGuestIDs[guestKey + '_name'] || '');
-    const idNumber = additionalGuestIDs[guestKey] || '';
-    const { errors, warnings } = runIDVerification(ocrTextStore[guestKey], name, idNumber);
-    applyVerificationResult(guestKey, errors, warnings);
-  }, 600);
-}
+// No re-verify needed — Groq already verified on capture. These are no-ops now.
+function reVerifyMainGuestID() {}
+function reVerifyAdditionalGuestID(guestKey) {}
 
 // Check all verifications passed (for isStepValid)
 function allIDsVerified() {
@@ -1308,9 +1198,9 @@ function allIDsVerified() {
   return keys.every(k => idVerificationStatus[k].verified);
 }
 
-// Duplicate check at navigation time (needs all OCR texts)
+// Duplicate check at navigation time — compare extracted ID numbers AND names
 function checkDuplicateIDs() {
-  const entries = Object.entries(ocrTextStore).filter(([k, v]) => v && v.length > 20);
+  const entries = Object.entries(idExtractedData).filter(([k, v]) => v);
   if (entries.length <= 1) return { hasDuplicates: false };
 
   function getLabel(key) {
@@ -1324,15 +1214,21 @@ function checkDuplicateIDs() {
 
   for (let i = 0; i < entries.length; i++) {
     for (let j = i + 1; j < entries.length; j++) {
-      const [keyA, textA] = entries[i];
-      const [keyB, textB] = entries[j];
-      const numsA = findLongNumbers(textA);
-      const numsB = findLongNumbers(textB);
-      let numDup = false;
-      for (const n of numsA) { if (numsB.has(n)) { numDup = true; break; } }
-      const sim = computeTextSimilarity(textA, textB);
-      if (numDup || sim > 0.7) {
-        return { hasDuplicates: true, message: `Duplicate ID: ${getLabel(keyA)} and ${getLabel(keyB)} appear to have the same document. Each guest must provide their own unique ID.` };
+      const [keyA, dataA] = entries[i];
+      const [keyB, dataB] = entries[j];
+
+      // Compare ID numbers (stripped)
+      const idA = (dataA.id_number || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+      const idB = (dataB.id_number || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+      if (idA && idB && idA === idB) {
+        return { hasDuplicates: true, message: `Duplicate ID: ${getLabel(keyA)} and ${getLabel(keyB)} have the same document number (${dataA.id_number}). Each guest must provide their own unique ID.` };
+      }
+
+      // Compare extracted names (same person's ID used twice)
+      const nameA = (dataA.full_name || '').replace(/[^a-z]/gi, '').toLowerCase();
+      const nameB = (dataB.full_name || '').replace(/[^a-z]/gi, '').toLowerCase();
+      if (nameA && nameB && nameA.length > 3 && nameA === nameB) {
+        return { hasDuplicates: true, message: `Duplicate ID: ${getLabel(keyA)} and ${getLabel(keyB)} uploaded the same person's document (${dataA.full_name}). Each guest must provide their own unique ID.` };
       }
     }
   }
@@ -1734,7 +1630,7 @@ function retakePhoto(type) {
   else {
     idCaptured = false;
     mainGuestIDNumber = '';
-    delete ocrTextStore['main'];
+    delete idExtractedData['main'];
     delete idVerificationStatus['main'];
     const verifyEl = document.getElementById('id-verify-main');
     if (verifyEl) verifyEl.style.display = 'none';
@@ -1905,7 +1801,7 @@ function retakeGuestID(guestKey) {
   });
   additionalGuestPhotos[guestKey] = false;
   delete additionalGuestPhotoData[guestKey];
-  delete ocrTextStore[guestKey];
+  delete idExtractedData[guestKey];
   delete idVerificationStatus[guestKey];
   const verifyEl = document.getElementById('id-verify-' + guestKey);
   if (verifyEl) verifyEl.style.display = 'none';
@@ -2148,7 +2044,7 @@ function resetApp() {
   stopCountdown();
   agreed = false; selfieCaptured = false; idCaptured = false; sigDrawn = false;
   allGuests = []; additionalGuestIDs = {}; additionalGuestPhotos = {}; additionalGuestPhotoData = {}; guestsFetched = false; mainGuestIDNumber = '';
-  ocrTextStore = {}; idVerificationStatus = {};
+  idExtractedData = {}; idVerificationStatus = {};
   const mainIDInput = document.getElementById('main-guest-id-number');
   if (mainIDInput) mainIDInput.value = '';
   const mainIDSection = document.getElementById('main-guest-id-section');

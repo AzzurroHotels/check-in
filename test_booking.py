@@ -66,8 +66,8 @@ def create_reservation():
             payload = {
                 "startDate": start,
                 "endDate": end,
-                "guestFirstName": "Test",
-                "guestLastName": "Guest",
+                "guestFirstName": "Alvin",
+                "guestLastName": "Rustia",
                 "guestCountry": "US",
                 "guestZip": "10001",
                 "guestEmail": "testguest@example.com",

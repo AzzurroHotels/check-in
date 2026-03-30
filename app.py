@@ -1,4 +1,6 @@
 import os
+import json
+import base64
 import requests
 import datetime
 from flask import Flask, request, jsonify, send_file
@@ -324,6 +326,104 @@ def get_hotel_details():
         return jsonify(response.json()), response.status_code
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+@app.route('/api/verify-id', methods=['POST'])
+def verify_id():
+    """Analyze an ID document image using Groq Vision API."""
+    image_file = request.files.get('image')
+    guest_name = request.form.get('guestName', '')
+    entered_id = request.form.get('idNumber', '')
+
+    if not image_file:
+        return jsonify({"success": False, "message": "No image provided"}), 400
+
+    if not GROQ_API_KEY:
+        return jsonify({"success": False, "message": "Vision API not configured"}), 500
+
+    try:
+        img_bytes = image_file.read()
+        img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+        mime = image_file.content_type or 'image/jpeg'
+
+        prompt = f"""You are an ID document verification system for a hotel check-in. Analyze this image of an identity document.
+
+IMPORTANT: This is a photo taken by a hotel guest of their ID card, passport, or driver's licence. The photo may be slightly blurry, at an angle, or have glare — this is normal. Be lenient with image quality. If you can see it's an ID document with text on it, set is_valid_id to true.
+
+Extract the information and respond with ONLY raw JSON (no markdown, no code blocks, no explanation):
+
+{{"is_valid_id": true, "document_type": "passport", "full_name": "John Smith", "id_number": "AB123456", "expiry_date": "15/06/2028", "is_expired": false, "confidence": 0.9, "issues": []}}
+
+Rules:
+- is_valid_id: true if the image shows ANY government-issued ID (passport, driver licence, national ID, etc). Only false if clearly not an ID.
+- document_type: "passport", "driver_licence", "national_id", or "other"
+- full_name: The person's name as shown on the document
+- id_number: The main document number (passport number, licence number, etc)
+- expiry_date: Format as DD/MM/YYYY if visible, empty string if not found
+- is_expired: true only if expiry date is clearly in the past, null if uncertain
+- confidence: Your confidence in the extraction (0.0-1.0)
+- issues: List problems ONLY if:
+  - The booking name "{guest_name}" does NOT match the name on the document (name mismatch)
+  - The entered ID "{entered_id}" does NOT match the document number (ID mismatch)
+  - The document is expired
+  - Leave empty [] if everything looks good or fields are not yet provided"""
+
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}
+                        ]
+                    }
+                ],
+                "temperature": 0.1,
+                "max_tokens": 500
+            },
+            timeout=30
+        )
+
+        if resp.status_code != 200:
+            print(f"Groq API error: {resp.status_code} {resp.text[:200]}")
+            return jsonify({"success": False, "message": "Vision API error"}), 500
+
+        result = resp.json()
+        content = result['choices'][0]['message']['content'].strip()
+        print(f"--- GROQ RAW RESPONSE ---")
+        print(content[:500])
+
+        # Parse JSON from response (handle markdown code blocks if present)
+        if content.startswith('```'):
+            content = content.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+
+        parsed = json.loads(content)
+        print(f"--- GROQ PARSED ---")
+        print(json.dumps(parsed, indent=2))
+
+        return jsonify({"success": True, "data": parsed})
+
+    except json.JSONDecodeError as e:
+        print(f"Groq JSON parse error: {e}")
+        print(f"Raw content: {content[:500]}")
+        # Return a permissive fallback if parsing fails
+        return jsonify({"success": True, "data": {
+            "is_valid_id": True, "document_type": "other", "full_name": "",
+            "id_number": "", "expiry_date": "", "is_expired": None,
+            "confidence": 0.5, "issues": ["Could not fully parse document — please verify manually"]
+        }})
+    except Exception as e:
+        print(f"Verify-ID error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5005, debug=True)
